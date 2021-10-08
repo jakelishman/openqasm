@@ -1,7 +1,7 @@
 import os
 import pytest
 
-from openqasm.parser.antlr.qasm_parser import parse
+import openqasm3
 
 
 class TestOpenQasmTests:
@@ -27,7 +27,7 @@ class TestOpenQasmTests:
                 with open(example_file) as f:
                     source = f.read()
                     try:
-                        parse(source)
+                        openqasm3.parse(source)
                         print(f"success: {example_file}")
                         success_count += 1
                     except Exception as e:

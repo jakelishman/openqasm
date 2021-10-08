@@ -1,0 +1,17 @@
+include README.md
+include LICENSE.txt
+include setup.cfg
+include pyproject.toml
+include requirements.txt
+include openqasm3/py.typed
+
+# ANTLR-generated files.
+include openqasm3/antlr/*.interp
+include openqasm3/antlr/*.tokens
+
+# Test files
+recursive-include tests *.py
+## Specifically exclude the tests of the repository examples, because they live
+## outside the tree of this package, and can't sensibly be brought into the
+## sdist without duplication.
+exclude tests/test_openqasm_tests.py
