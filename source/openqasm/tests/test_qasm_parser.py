@@ -25,7 +25,6 @@ from openqasm3.ast import (
     DurationType,
     EndStatement,
     ExpressionStatement,
-    FloatType,
     ForInLoop,
     FunctionCall,
     GateModifierName,
@@ -58,7 +57,6 @@ from openqasm3.ast import (
     Subscript,
     TimeUnit,
     DurationLiteral,
-    UintType,
     UnaryExpression,
     UnaryOperator,
 )

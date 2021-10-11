@@ -49,10 +49,10 @@ jobs:
         run: python -mpip install -e .[all]
 
       - name: Check format
-        run: black --check --diff .
+        run: black --check --diff openqasm3 tests
 
       - name: Check style
-        run: pylint .
+        run: pylint openqasm3 tests
 
       - name: Run tests
         run: pytest -vv --color=yes tests
