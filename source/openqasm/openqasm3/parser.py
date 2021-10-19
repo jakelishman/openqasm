@@ -31,8 +31,14 @@ __all__ = [
 
 from typing import Union
 
-from antlr4 import CommonTokenStream, InputStream, ParserRuleContext
-from antlr4.tree.Tree import TerminalNode
+try:
+    from antlr4 import CommonTokenStream, InputStream, ParserRuleContext
+    from antlr4.tree.Tree import TerminalNode
+except ImportError as exc:
+    raise ImportError(
+        "Parsing is not available unless the [parser] extra is installed,"
+        " such as by 'pip install openqasm3[parser]'."
+    ) from exc
 
 from .antlr.qasm3Lexer import qasm3Lexer
 from .antlr.qasm3Parser import qasm3Parser

@@ -16,5 +16,11 @@ the :obj:`~parser.parse` function.
 
 __version__ = "0.1.0"
 
-from . import ast, parser, visitor
-from .parser import parse
+from . import ast, visitor
+
+try:
+    from . import parser
+    from .parser import parse
+except ImportError:
+    # Installed without the parsing extra.
+    pass
