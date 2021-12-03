@@ -1,7 +1,6 @@
 name: Publish QAMP2021 test Reference Python Package
 
-on:
-  [tag]
+on: [push, pull_request]
 
 jobs:
   publish:
