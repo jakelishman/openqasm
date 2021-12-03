@@ -54,5 +54,5 @@ jobs:
         with:
           user: __token__
           password: ${{ secrets.pypi_password }}
-          repository_url: https://test.pypi.org/legacy
+          repository_url: https://test.pypi.org/legacy/
           packages_dir: source/openqasm/dist/
