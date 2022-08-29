@@ -5,22 +5,94 @@ Parser (``openqasm3.parser``)
 
 Tools for parsing OpenQASM 3 programs into the :obj:`reference AST <openqasm3.ast>`.
 
-The quick-start interface is simply to call ``openqasm3.parse``:
+The quick-start interface is simply to call :func:`openqasm3.parse`:
 
 .. currentmodule:: openqasm3
 .. autofunction:: openqasm3.parse
 
-The rest of this module provides some lower-level internals of the parser.
-
 .. currentmodule:: openqasm3.parser
+
+This package contains only an OpenQASM 3 AST generator, and does not provide a generator for any
+code written in the calibration langauge, such as that found in ``cal`` and ``defcal`` blocks.
+However, you may install additional Python packages that provide a parser in the
+``openqasm3.parser.calibration`` entry point, whose key matches the calibration-grammar name used in
+``defcalgrammar`` statements.  For example, an OpenPulse parser should use the key ``openpulse``.
+
+If you do not care about parsing pulse-dialect constructs, you may set the
+``use_dummy_calibration_parser`` to pass any calibration blocks through unchanged.  The presence of
+a ``defcalgrammar`` statement that has an installed parser overrides this setting.
+
+For package authors wishing to implement a subparser, see :ref:`writing-calibration-subparser`
+below.  The installed subparsers can also be queried:
+
+.. autofunction:: known_calibration_parsers
+
+You can also sidestep the plugin-discovery by passing a pre-constructed calibration parser as part
+of the `calibration_parser_overrides` option to :func:`~openqasm3.parse` above.
+
+Errors in :func:`~openqasm3.parse` will raise an instance of :class:`QASM3ParsingError`.  In some
+cases, one of the subclasses listed below will be raised to give more specific information.
+
+.. autoclass:: QASM3ParsingError
+.. autoclass:: DelegatedParserError
+    :show-inheritance:
+
+
+Subclassing the parse-tree visitor
+==================================
+
+It is possible to manually construct an instance of the parse-tree visitor, or to subclass it, in
+order to override the error handling and recovery strategies from ANTLR to your liking.  Internally,
+the :func:`~openqasm3.parse` function constructs an instance of this visitor and calls its main
+entry point, ``QASMNodeVisitor.visitProgram``.
+
+.. autoclass:: QASMNodeVisitor
+
+For further details on modifying the behaviour of ANTLR, refer to the `ANTLR documentation
+<https://github.com/antlr/antlr4/blob/master/doc/index.md>`__.
+
+There are also some utility functions defined here for constructing debug information in the AST
+nodes.
+
 .. autofunction:: span
 .. autofunction:: add_span
 .. autofunction:: combine_span
 .. autofunction:: get_span
-.. autoclass:: QASMNodeVisitor
+
+.. _writing-calibration-subparser:
+
+Writing a calibration subparser
+===============================
+
+When the parser encounters a ``defcalgrammar`` statement, it will attempt to load a suitable
+calibration parser.  These are generally supplied as plugins by other Python packages, but can be
+passed directly using the `calibration_grammar_overrides` of :func:`~openqasm3.parse`.
+
+Packages taking the plugin approach should register a subclass of :class:`.CalibrationParser` with
+the `openqasm3.parser.calibration` `entry point in the package metadata
+<https://setuptools.pypa.io/en/latest/userguide/entry_point.html>`__, using the calibration language
+(as it appears in the string in a ``defcalgrammar`` statement as they key.  For example, a package
+called ``my_calibration_parser`` providing a parser ``MyParser`` for the language ``my-language``
+could have a section in its ``setup.cfg`` file that looks like:
+
+.. code-block:: toml
+
+    [options.entry_points]
+    openqasm3.parser.calibration =
+        my-language = my_calibration_parser:MyParser
+
+Calibration parsers should all derive from the base class, and override the abstract methods shown:
+
+.. autoclass:: CalibrationParser
+    :members:
+
+This module also contains the simplest possible implementation of this class.  This is not
+registered with any particular language; it is just the no-op parser included for debugging help.
+
+.. autoclass:: DummyCalibrationParser
 """
 
-# pylint: disable=wrong-import-order
+# pylint: disable=wrong-import-order,wrong-import-position
 
 __all__ = [
     "parse",
@@ -30,10 +102,23 @@ __all__ = [
     "span",
     "QASMNodeVisitor",
     "QASM3ParsingError",
+    "DelegatedParserError",
+    "CalibrationParser",
+    "DummyCalibrationParser",
+    "known_calibration_parsers",
 ]
 
+import abc
+import sys
+
 from contextlib import contextmanager
-from typing import Union, TypeVar, List
+from typing import Union, TypeVar, List, Optional, Generic, Mapping, Any, Sequence, Type
+
+# importlib.metadata is available in 3.8 and 3.9 but the API is different.
+if sys.version_info < (3, 10):
+    import importlib_metadata
+else:
+    from importlib import metadata as importlib_metadata
 
 try:
     from antlr4 import CommonTokenStream, InputStream, ParserRuleContext, RecognitionException
@@ -60,19 +145,106 @@ _TYPE_NODE_INIT = {
 
 
 class QASM3ParsingError(Exception):
-    """An error raised by the AST visitor during the AST-generation phase.  This is raised in cases where the
-    given program could not be correctly parsed."""
+    """An error raised by the AST visitor during the AST-generation phase.  This is raised in cases
+    where the given program could not be correctly parsed."""
 
 
-def parse(input_: str, *, permissive=False) -> ast.Program:
-    """
-    Parse a complete OpenQASM 3 program from a string.
+class DelegatedParserError(QASM3ParsingError):
+    """An error raised by the AST visitor when a delegated parser raises an internal error related
+    to the parsing."""
 
-    :param input_: A string containing a complete OpenQASM 3 program.
-    :param permissive: A Boolean controlling whether ANTLR should attempt to
-        recover from incorrect input or not.  Defaults to ``False``; if set to
-        ``True``, the reference AST produced may be invalid if ANTLR emits any
-        warning messages during its parsing phase.
+
+_CalibrationASTNode = TypeVar("_CalibrationASTNode")
+
+
+class CalibrationParser(abc.ABC, Generic[_CalibrationASTNode]):
+    """Abstract base class for defining the API of subparsers that are used for ``cal`` and
+    ``defcal`` blocks.  Only two public methods are necessary, as shown below, both of which take a
+    the user input string.  It is the responsiblity of the subparser to perform both the lexical and
+    semantic analysis.
+
+    A subparser can return any Python object as the representation of its AST nodes, and these will
+    be embedded verbatim in the OpenQASM 3 AST in the ``body`` fields of
+    :class:`~.ast.CalibrationStatement` and :class:`~.ast.CalibrationDefinition` for ``cal`` and
+    ``defcal`` statements, respectively."""
+
+    @abc.abstractmethod
+    def parse_cal(self, cal_block: str) -> _CalibrationASTNode:
+        """Parse the content of a ``cal`` block into a valid AST node in the
+        target AST.
+
+        :param cal_block: The input code contained with a ``cal`` block.  This
+            does not include the starting or ending braces (``{`` and ``}``).
+        :type cal_block: str
+        """
+
+    @abc.abstractmethod
+    def parse_defcal(
+        self,
+        defcal_block: str,
+        target: ast.Identifier,
+        arguments: Sequence[Union[ast.ClassicalArgument, ast.Expression]],
+        qubits: Sequence[ast.Identifier],
+        return_type: Optional[ast.ClassicalType],
+    ) -> _CalibrationASTNode:
+        """Parse the content of a ``cal`` block into a valid AST node in the
+        target AST.
+
+        :param defcal_block: The input code contained with the body of a ``defcal``
+            statement.  This does not include the starting or ending braces
+            (``{`` and ``}``).
+        :type defcal_block: str
+        :param target: The identifier that the ``defcal`` statement is defining,
+            or adding an overload to.
+        :type target: ast.Identifier
+        :param arguments: A sequence of the specifications of the classical
+            arguments to the ``defcal`` statement.
+        :type arguments: Sequence[Union[ast.ClassicalArgument, ast.Expression]]
+        :param qubits: A sequence of the qubit arguments to the ``defcal``
+            statement.  These might be wildcard identifiers or hardware qubits.
+        :type qubits: Sequence[ast.Identifier]
+        :param return_type: The type (if any) of the output of this ``defcal``
+            statement.
+        :type return_type: Optional[ast.ClassicalType]
+        """
+
+
+def parse(
+    input_: str,
+    *,
+    permissive=False,
+    use_dummy_calibration_parser: bool = False,
+    default_defcalgrammar: Optional[str] = None,
+    calibration_parser_options: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    calibration_parser_overrides: Optional[Mapping[str, CalibrationParser]] = None,
+) -> ast.Program:
+    """Parse a complete OpenQASM 3 program from a string.
+
+    :param input\\_: A string containing a complete OpenQASM 3 program.
+    :type input\\_: str
+    :param permissive: A Boolean controlling whether ANTLR should attempt to recover from incorrect
+        input or not.  Defaults to ``False``; if set to ``True``, the reference AST produced may be
+        invalid if ANTLR emits any warning messages during its parsing phase.
+    :type permissive: bool
+    :param use_dummy_calibration_parser: If ``True``, then a program that contains
+        calibration-grammar constructs (*e.g.* ``cal`` or ``defcal``) blocks but does not have a
+        ``defcalgrammar`` line will use an instance of :class:`.DummyCalibrationParser` to "parse"
+        calibration blocks, which simply inserts a string of the code into the AST.
+    :type use_dummy_calibration_parser: bool
+    :param default_defcalgrammar: optional, default ``None``.  If given, then when parsing a program
+        with no ``defcalgrammar`` statement, the given calibration grammar will be assumed.  If not
+        given, it is a :class:`.QASM3ParsingError` if a calibration-level construct is encountered
+        wtihout first seeing a ``defcalgrammar``.
+    :type default_defcalgrammar: Optional[str]
+    :param calibration_parser_options: Optional mapping of calibration grammar names to the
+        ``kwargs`` mappings that should be passed to instantiate their delegated parsers.  For finer
+        control, consider passing an instance of the parser directly using
+        `calibration_parser_overrides`, which takes precedence over this mapping.
+    :type calibration_parser_options: Optional[Mapping[str, Mapping[str, Any]]]
+    :param calibration_parser_overrides: Optional mapping of calibration grammar names to
+        pre-constructed instances of :class:`.CalibrationParser`.
+    :type calibration_parser_overrides: Optional[Mapping[str, CalibrationParser]]
+
     :return: A complete :obj:`~ast.Program` node.
     """
     lexer = qasm3Lexer(InputStream(input_))
@@ -87,7 +259,11 @@ def parse(input_: str, *, permissive=False) -> ast.Program:
         tree = parser.program()
     except (RecognitionException, ParseCancellationException) as exc:
         raise QASM3ParsingError() from exc
-    return QASMNodeVisitor().visitProgram(tree)
+    return QASMNodeVisitor(
+        use_dummy_calibration_parser=use_dummy_calibration_parser,
+        default_defcalgrammar=default_defcalgrammar,
+        calibration_parser_options=calibration_parser_options,
+    ).visitProgram(tree)
 
 
 def get_span(node: Union[ParserRuleContext, TerminalNode]) -> ast.Span:
@@ -129,18 +305,59 @@ def _visit_identifier(identifier: TerminalNode):
     return add_span(ast.Identifier(identifier.getText()), get_span(identifier))
 
 
-def _raise_from_context(ctx: ParserRuleContext, message: str):
-    raise QASM3ParsingError(f"L{ctx.start.line}:C{ctx.start.column}: {message}")
+def _raise_from_context(
+    ctx: ParserRuleContext,
+    message: str,
+    base: Optional[Exception] = None,
+    type_: Type[QASM3ParsingError] = QASM3ParsingError,
+):
+    exc = type_(f"L{ctx.start.line}:C{ctx.start.column}: {message}")
+    if base is None:
+        raise exc
+    raise exc from base
+
+
+class DummyCalibrationParser(CalibrationParser[str]):
+    """A dummy calibration parser that returns the string of the block
+    unaltered.  Normally one would want to return some sort of AST node, but
+    this can be useful for debugging.
+
+    This class is accessed by using the ``use_dummy_calibration_parser=True``
+    option to :func:`parse` or :class:`QASMNodeVisitor`."""
+
+    def parse_cal(self, cal_block):
+        return cal_block
+
+    def parse_defcal(self, defcal_block, target, arguments, qubits, return_type):
+        return defcal_block
+
+
+def known_calibration_parsers():
+    """Return a list of the ``importlib.metadata`` entry point objects that have been registered as
+    subparsers by external packages."""
+    return importlib_metadata.entry_points(group="openqasm3.parser.calibration")
 
 
 class QASMNodeVisitor(qasm3ParserVisitor):
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        use_dummy_calibration_parser: bool = False,
+        default_defcalgrammar: Optional[str] = None,
+        calibration_parser_options: Optional[Mapping[str, Mapping[str, Any]]] = None,
+        calibration_parser_overrides: Optional[Mapping[str, CalibrationParser]] = None,
+    ):
         # A stack of "contexts", each of which is a stack of "scopes".  Contexts
         # are for the main program, gates and subroutines, while scopes are
         # loops, if/else and manual scoping constructs.  Each "context" always
         # contains at least one scope: the base ``ParserRuleContext`` that
         # opened it.
         self._contexts: List[List[ParserRuleContext]] = []
+        self._calibration_parser: Optional[CalibrationParser] = None
+        self.use_dummy_calibration_parser = use_dummy_calibration_parser
+        self.default_defcalgrammar = default_defcalgrammar
+        self.calibration_parser_options = calibration_parser_options or {}
+        self.calibration_parser_overrides = calibration_parser_overrides or {}
 
     @contextmanager
     def _push_context(self, ctx: ParserRuleContext):
@@ -177,6 +394,34 @@ class QASMNodeVisitor(qasm3ParserVisitor):
             isinstance(scope, (qasm3Parser.ForStatementContext, qasm3Parser.WhileStatementContext))
             for scope in reversed(self._current_context())
         )
+
+    def _load_calibration_parser(self, grammar_name: str):
+        if grammar_name in self.calibration_parser_overrides:
+            return self.calibration_parser_overrides[grammar_name]
+        parsers = known_calibration_parsers()
+        if grammar_name not in parsers.names:
+            raise QASM3ParsingError(
+                f"No known parser for '{grammar_name}'."
+                " Either install a parsing package for this grammar,"
+                " or use the 'default_defcalgrammar' option in this parser."
+            )
+        parser_kwargs = self.calibration_parser_options.get(grammar_name, {})
+        self._calibration_parser = parsers[grammar_name].load()(**parser_kwargs)
+
+    def _get_calibration_parser(self, ctx: ParserRuleContext):
+        if self._calibration_parser is None:
+            if self.default_defcalgrammar is not None:
+                self._load_calibration_parser(self.default_defcalgrammar)
+            elif self.use_dummy_calibration_parser:
+                self._calibration_parser = DummyCalibrationParser()
+            else:
+                msg = (
+                    "No 'defcalgrammar' statement was seen before a pulse-level construct."
+                    " Either include an explicit 'defcalgrammar' statement,"
+                    " or pass a 'default_defcalgrammar' argument to this parser."
+                )
+                _raise_from_context(ctx, msg)
+        return self._calibration_parser
 
     @span
     def visitProgram(self, ctx: qasm3Parser.ProgramContext):
@@ -258,15 +503,23 @@ class QASMNodeVisitor(qasm3ParserVisitor):
 
     @span
     def visitCalStatement(self, ctx: qasm3Parser.CalStatementContext):
-        return ast.CalibrationStatement(
-            body=ctx.CalibrationBlock().getText() if ctx.CalibrationBlock() else ""
-        )
+        body = ctx.CalibrationBlock().getText() if ctx.CalibrationBlock() else ""
+        parser = self._get_calibration_parser(ctx)
+        try:
+            parsed_body = parser.parse_cal(body)
+        except Exception as exc:
+            _raise_from_context(
+                ctx, "caught calibration subparser exception", base=exc, type_=DelegatedParserError
+            )
+        return ast.CalibrationStatement(body=parsed_body)
 
     @span
     def visitCalibrationGrammarStatement(self, ctx: qasm3Parser.CalibrationGrammarStatementContext):
         if not self._in_global_scope():
             _raise_from_context(ctx, "'defcalgrammar' statements must be global")
-        return ast.CalibrationGrammarDeclaration(name=ctx.StringLiteral().getText()[1:-1])
+        language = ctx.StringLiteral().getText()[1:-1]
+        self._load_calibration_parser(language)
+        return ast.CalibrationGrammarDeclaration(name=language)
 
     @span
     def visitClassicalDeclarationStatement(
@@ -318,6 +571,7 @@ class QASMNodeVisitor(qasm3ParserVisitor):
 
     @span
     def visitDefcalStatement(self, ctx: qasm3Parser.DefcalStatementContext):
+        name = self.visit(ctx.defcalTarget())
         arguments = (
             [
                 self.visit(argument)
@@ -330,13 +584,20 @@ class QASMNodeVisitor(qasm3ParserVisitor):
         return_type = (
             self.visit(ctx.returnSignature().scalarType()) if ctx.returnSignature() else None
         )
-
+        body = (ctx.CalibrationBlock().getText() if ctx.CalibrationBlock() else "",)
+        parser = self._get_calibration_parser(ctx)
+        try:
+            parsed_body = parser.parse_defcal(body, name, arguments, qubits, return_type)
+        except Exception as exc:
+            _raise_from_context(
+                ctx, "caught calibration subparser exception", base=exc, type_=DelegatedParserError
+            )
         return ast.CalibrationDefinition(
-            name=self.visit(ctx.defcalTarget()),
+            name=name,
             arguments=arguments,
             qubits=qubits,
             return_type=return_type,
-            body=ctx.CalibrationBlock().getText() if ctx.CalibrationBlock() else "",
+            body=parsed_body,
         )
 
     @span
@@ -633,7 +894,7 @@ class QASMNodeVisitor(qasm3ParserVisitor):
             return ast.DurationLiteral(value=float(value), unit=unit)
         if ctx.HardwareQubit():
             return ast.Identifier(ctx.HardwareQubit().getText())
-        raise _raise_from_context(ctx, "unknown literal type")
+        _raise_from_context(ctx, "unknown literal type")
 
     @span
     def visitAliasExpression(self, ctx: qasm3Parser.AliasExpressionContext):

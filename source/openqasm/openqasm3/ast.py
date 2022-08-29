@@ -11,7 +11,7 @@ The reference abstract syntax tree (AST) for OpenQASM 3 programs.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Any
 from enum import Enum
 
 __all__ = [
@@ -831,7 +831,9 @@ class CalibrationGrammarDeclaration(Statement):
 
 @dataclass
 class CalibrationStatement(Statement):
-    """An inline ``cal`` statement for embedded pulse-grammar interactions.
+    """An inline ``cal`` statement for embedded pulse-grammar interactions.  The
+    type of ``body`` will depend on the subparser used for calibration-grammar
+    blocks (if any).
 
     Example::
 
@@ -840,13 +842,14 @@ class CalibrationStatement(Statement):
         }
     """
 
-    body: str
+    body: Any
 
 
 @dataclass
 class CalibrationDefinition(Statement):
     """
-    Calibration definition
+    Calibration definition.  The type of ``body`` is dependent on the subparser
+    used to handle calibration blocks, if any.
 
     Example::
 
@@ -859,7 +862,7 @@ class CalibrationDefinition(Statement):
     arguments: List[Union[ClassicalArgument, Expression]]
     qubits: List[Identifier]
     return_type: Optional[ClassicalType]
-    body: str
+    body: Any
 
 
 @dataclass
