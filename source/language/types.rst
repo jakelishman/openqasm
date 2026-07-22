@@ -870,8 +870,10 @@ Two or more registers of the same type (*i.e.* classical or quantum) can
 be concatenated to form a register of the same type whose size is the
 sum of the sizes of the individual registers. The concatenated register
 is a reference to the bits or qubits of the original registers. The
-statement ``a ++ b`` denotes the concatenation of registers ``a`` and ``b``. A register cannot
-be concatenated with any part of itself.
+statement ``a ++ b`` denotes the concatenation of registers ``a`` and ``b``.
+
+No register or alias can contain more than one reference to the same bit.
+A bit can be referenced by more than one alias.
 
 Classical and quantum registers can be indexed in a way that selects a
 subset of (qu)bits, *i.e.* by an index set. A register so indexed is

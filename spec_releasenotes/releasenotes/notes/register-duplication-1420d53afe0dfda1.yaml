@@ -1,0 +1,9 @@
+---
+upgrade:
+  - |
+    Previous versions of the specification forbade register-concatenation (``++``) expressions that
+    referenced the same register more than once.  This was inconsistent with set-indexing
+    expressions (``a[{1, 2, 3}]``) which allowed expression of the same concept.
+
+    The restriction is made more explicit that aliases cannot contain multiple references to the
+    same bit.
